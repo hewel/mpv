@@ -1291,8 +1291,12 @@ static void apply_crop(struct pl_frame *frame, struct mp_rect crop,
     }
 }
 
+static void resize(struct vo *vo);
+
 static bool set_colorspace_hint(struct priv *p, struct pl_color_space *hint)
 {
+    if (p->context->host)
+        return false;
     struct ra_swapchain *sw = p->ra_ctx->swapchain;
 
     struct mp_image_params params = {
@@ -1560,8 +1564,9 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     }
 
     struct pl_swapchain_frame swframe;
+    int previous_width = vo->dwidth, previous_height = vo->dheight;
     bool should_draw = sw->fns->start_frame(sw, NULL); // for wayland logic
-    if (!should_draw || !pl_swapchain_start_frame(p->sw, &swframe)) {
+    if (!should_draw || !gpu_ctx_start_frame(p->context, &swframe)) {
         if (frame->current) {
             // Advance the queue state to the current PTS to discard unused frames
             struct pl_queue_params qparams = *pl_queue_params(
@@ -1574,6 +1579,9 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
         }
         return VO_FALSE;
     }
+    if (p->context->host &&
+        (vo->dwidth != previous_width || vo->dheight != previous_height))
+        resize(vo);
 
     bool valid = false;
     p->is_interpolated = false;
@@ -1633,6 +1641,12 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
         if (opts->treat_srgb_as_power22 & 4 && target_pq)
             target.color.transfer = PL_COLOR_TRC_SRGB;
 #endif
+    }
+    if (p->context->host) {
+        // Host image encoding is an ABI contract, not a colorspace hint.
+        target.color = swframe.color_space;
+        target.repr = swframe.color_repr;
+        target.icc = NULL;
     }
     stats_time_start(p->stats, "osd-update");
     update_overlays(vo, p->osd_res,
@@ -1774,6 +1788,8 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     // fall through
 
 done:
+    if (p->context->host)
+        p->context->frame_error = !valid;
     if (!valid) // clear with purple to indicate error
         pl_tex_clear(gpu, swframe.fbo, (float[4]){ 0.5, 0.0, 1.0, 1.0 });
 
@@ -1788,7 +1804,7 @@ static void flip_page(struct vo *vo)
     struct ra_swapchain *sw = p->ra_ctx->swapchain;
 
     if (p->frame_pending) {
-        if (!pl_swapchain_submit_frame(p->sw))
+        if (!gpu_ctx_submit_frame(p->context))
             MP_ERR(vo, "Failed presenting frame!\n");
         p->frame_pending = false;
     }

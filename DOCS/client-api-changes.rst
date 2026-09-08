@@ -27,6 +27,18 @@ client API version 1.17, they were listed here partially.)
 This listing includes changes to the bare C API and behavior only, not what
 you can access with them.
 
+Experimental fork extension
+==========================
+
+This fork adds the Linux/Vulkan SDR ``mpv/gpu_next.h`` interface, versioned
+separately by ``MPV_GPU_NEXT_HOST_VERSION``. ``mpv_gpu_next_set_host`` registers
+host-owned Vulkan rendering targets before initialization.
+``mpv_gpu_next_request_redraw`` asks the VO scheduler to redraw after host resize
+or recovery from an unavailable target. Presentation remains scheduled by mpv;
+this is not an extension of the OpenGL render API or a stable upstream ABI.
+See ``gpu-next-host-baseline.rst`` for the exact color, ownership, synchronization
+and verified platform contract.
+
 API changes
 ===========
 

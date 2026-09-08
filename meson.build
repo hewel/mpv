@@ -1351,6 +1351,7 @@ if features['vulkan']
     dependencies += vulkan
     sources += files('video/out/hwdec/hwdec_vulkan.c',
                      'video/out/vulkan/context.c',
+                     'video/out/gpu_next/host.c',
                      'video/out/vulkan/utils.c',
                      'video/filter/vf_gpu_vulkan.c')
 endif
@@ -1847,7 +1848,8 @@ if get_option('libmpv')
                  description: 'mpv media player client library')
 
     headers = ['include/mpv/client.h', 'include/mpv/render.h',
-               'include/mpv/render_gl.h', 'include/mpv/stream_cb.h']
+               'include/mpv/render_gl.h', 'include/mpv/stream_cb.h',
+               'include/mpv/gpu_next.h']
     install_headers(headers, subdir: 'mpv')
 
     # Allow projects to build with libmpv by cloning into ./subprojects/mpv

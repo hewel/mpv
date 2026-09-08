@@ -31,6 +31,9 @@
 #include "options/m_config.h"
 #include "video/out/placebo/utils.h"
 #include "video/out/gpu/video.h"
+#include "common/global.h"
+#include "player/client.h"
+#include "host.h"
 
 #if HAVE_D3D11
 #include "osdep/windows_utils.h"
@@ -108,6 +111,12 @@ err_out:
 
 struct gpu_ctx *gpu_ctx_create(struct vo *vo, struct ra_ctx_opts *ctx_opts)
 {
+#if HAVE_VULKAN
+    const struct mpv_gpu_next_host *host =
+        mp_client_gpu_next_host(vo->global->client_api);
+    if (host)
+        return gpu_host_create(vo, ctx_opts, host);
+#endif
     struct gpu_ctx *ctx = talloc_zero(NULL, struct gpu_ctx);
     ctx->log = vo->log;
     ctx->ra_ctx = ra_ctx_create(vo, *ctx_opts);
@@ -182,6 +191,8 @@ err_out:
 
 bool gpu_ctx_resize(struct gpu_ctx *ctx, int w, int h)
 {
+    if (ctx->host)
+        return true;
 #if HAVE_VULKAN
     if (ra_vk_ctx_get(ctx->ra_ctx))
         // vulkan RA handles this by itself
@@ -196,6 +207,13 @@ void gpu_ctx_destroy(struct gpu_ctx **ctxp)
     struct gpu_ctx *ctx = *ctxp;
     if (!ctx)
         return;
+#if HAVE_VULKAN
+    if (ctx->host) {
+        gpu_host_destroy(ctx);
+        *ctxp = NULL;
+        return;
+    }
+#endif
     if (!ctx->ra_ctx)
         goto skip_common_pl_cleanup;
 
@@ -233,4 +251,22 @@ skip_common_pl_cleanup:
 
     talloc_free(ctx);
     *ctxp = NULL;
+}
+
+bool gpu_ctx_start_frame(struct gpu_ctx *ctx, struct pl_swapchain_frame *frame)
+{
+#if HAVE_VULKAN
+    if (ctx->host)
+        return gpu_host_start_frame(ctx, frame);
+#endif
+    return pl_swapchain_start_frame(ctx->swapchain, frame);
+}
+
+bool gpu_ctx_submit_frame(struct gpu_ctx *ctx)
+{
+#if HAVE_VULKAN
+    if (ctx->host)
+        return gpu_host_submit_frame(ctx);
+#endif
+    return pl_swapchain_submit_frame(ctx->swapchain);
 }

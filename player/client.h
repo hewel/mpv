@@ -12,6 +12,9 @@ struct mpv_handle;
 struct mp_client_api;
 struct mp_log;
 struct mpv_global;
+struct mpv_gpu_next_host;
+const struct mpv_gpu_next_host *
+mp_client_gpu_next_host(struct mp_client_api *api);
 
 // Includes space for \0
 #define MAX_CLIENT_NAME 64

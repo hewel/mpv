@@ -33,8 +33,12 @@ struct gpu_ctx {
     pl_swapchain swapchain;
 
     void *priv;
+    bool host;
+    bool frame_error;
 };
 
 struct gpu_ctx *gpu_ctx_create(struct vo *vo, struct ra_ctx_opts *ctx_opts);
 bool gpu_ctx_resize(struct gpu_ctx *ctx, int w, int h);
 void gpu_ctx_destroy(struct gpu_ctx **ctxp);
+bool gpu_ctx_start_frame(struct gpu_ctx *ctx, struct pl_swapchain_frame *frame);
+bool gpu_ctx_submit_frame(struct gpu_ctx *ctx);

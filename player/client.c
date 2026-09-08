@@ -42,10 +42,15 @@
 #include "osdep/timer.h"
 #include "osdep/io.h"
 #include "stream/stream.h"
+#include "video/out/vo.h"
 
 #include "command.h"
 #include "core.h"
 #include "client.h"
+#include "config.h"
+#if HAVE_VULKAN
+#include "mpv/gpu_next.h"
+#endif
 
 /*
  * Locking hierarchy:
@@ -81,6 +86,7 @@ struct mp_client_api {
     int num_custom_protocols;
 
     struct mpv_render_context *render_context;
+    const struct mpv_gpu_next_host *gpu_next_host;
 };
 
 struct observe_property {
@@ -665,6 +671,61 @@ int mpv_initialize_opts(mpv_handle *ctx, char **options)
 int mpv_initialize(mpv_handle *ctx)
 {
     return mpv_initialize_opts(ctx, NULL);
+}
+
+#if HAVE_VULKAN
+int mpv_gpu_next_set_host(mpv_handle *ctx, const mpv_gpu_next_host *host)
+{
+    if (!ctx)
+        return MPV_ERROR_INVALID_PARAMETER;
+    lock_core(ctx);
+    int res = MPV_ERROR_INVALID_PARAMETER;
+    if (!ctx->mpctx->initialized &&
+        (!host || (host->version == MPV_GPU_NEXT_HOST_VERSION &&
+                   host->instance && host->physical_device && host->device &&
+                   host->features && host->lock_queue && host->unlock_queue &&
+                   host->acquire && host->release && host->num_extensions >= 0 &&
+                   (!host->num_extensions || host->extensions)))) {
+        mp_mutex_lock(&ctx->clients->lock);
+        ctx->clients->gpu_next_host = host;
+        mp_mutex_unlock(&ctx->clients->lock);
+        res = 0;
+    }
+    unlock_core(ctx);
+    return res;
+}
+#else
+MPV_EXPORT int mpv_gpu_next_set_host(mpv_handle *ctx,
+                                   const struct mpv_gpu_next_host *host)
+{
+    return MPV_ERROR_NOT_IMPLEMENTED;
+}
+#endif
+
+MPV_EXPORT int mpv_gpu_next_request_redraw(mpv_handle *ctx)
+{
+    if (!ctx)
+        return MPV_ERROR_INVALID_PARAMETER;
+    lock_core(ctx);
+    int res = MPV_ERROR_UNINITIALIZED;
+    if (ctx->mpctx->initialized && ctx->clients->gpu_next_host) {
+        if (ctx->mpctx->video_out)
+            vo_redraw(ctx->mpctx->video_out);
+        res = 0;
+    }
+    unlock_core(ctx);
+    return res;
+}
+
+const struct mpv_gpu_next_host *
+mp_client_gpu_next_host(struct mp_client_api *api)
+{
+    if (!api)
+        return NULL;
+    mp_mutex_lock(&api->lock);
+    const struct mpv_gpu_next_host *host = api->gpu_next_host;
+    mp_mutex_unlock(&api->lock);
+    return host;
 }
 
 // set ev->data to a new copy of the original data
