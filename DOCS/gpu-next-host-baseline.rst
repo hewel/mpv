@@ -1,6 +1,11 @@
 Linux Vulkan SDR host baseline
 ==============================
 
+This is the historical experiment and acceptance record. For subsequent fork
+updates, use the maintenance and joint-regression procedure in
+`fork-maintenance.md <fork-maintenance.md>`_; do not reuse temporary paths below
+as production build inputs.
+
 Scope
 -----
 
