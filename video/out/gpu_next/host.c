@@ -13,6 +13,19 @@
 #include "context.h"
 #include "host.h"
 
+#if HAVE_VAAPI_DRM && HAVE_DRM && defined(__linux__)
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
+#include <unistd.h>
+#include <xf86drm.h>
+#include "mpv/render_gl.h"
+#define HOST_VAAPI_DRM 1
+#else
+#define HOST_VAAPI_DRM 0
+#endif
+
 struct host_priv {
     const mpv_gpu_next_host *host;
     pl_vulkan vk;
@@ -22,7 +35,82 @@ struct host_priv {
     mpv_gpu_next_target target;
     bool acquired;
     bool failed;
+#if HOST_VAAPI_DRM
+    mpv_opengl_drm_params_v2 drm_params;
+#endif
 };
+
+#if HOST_VAAPI_DRM
+static void host_init_drm(struct gpu_ctx *ctx)
+{
+    struct host_priv *p = ctx->priv;
+    const mpv_gpu_next_host *host = p->host;
+    PFN_vkGetInstanceProcAddr get_proc = host->get_proc_addr
+        ? host->get_proc_addr : vkGetInstanceProcAddr;
+    PFN_vkEnumerateDeviceExtensionProperties enumerate = (void *)
+        get_proc(host->instance, "vkEnumerateDeviceExtensionProperties");
+    PFN_vkGetPhysicalDeviceProperties2 get_props = (void *)
+        get_proc(host->instance, "vkGetPhysicalDeviceProperties2");
+    uint32_t count = 0;
+    if (!enumerate || !get_props ||
+        enumerate(host->physical_device, NULL, &count, NULL) != VK_SUCCESS)
+        return;
+
+    VkExtensionProperties *exts = talloc_array(NULL, VkExtensionProperties, count);
+    bool supported = false;
+    if (enumerate(host->physical_device, NULL, &count, exts) == VK_SUCCESS) {
+        for (uint32_t i = 0; i < count; i++) {
+            if (strcmp(exts[i].extensionName,
+                       VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME) == 0)
+                supported = true;
+        }
+    }
+    talloc_free(exts);
+    if (!supported) {
+        MP_VERBOSE(ctx, "Host VAAPI unavailable: no Vulkan DRM device identity\n");
+        return;
+    }
+
+    // Query support, not the enabled-device list: this is physical-device data.
+    VkPhysicalDeviceDrmPropertiesEXT drm_props = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT,
+    };
+    VkPhysicalDeviceProperties2 props = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &drm_props,
+    };
+    get_props(host->physical_device, &props);
+    if (!drm_props.hasRender) {
+        MP_VERBOSE(ctx, "Host VAAPI unavailable: Vulkan device has no render node\n");
+        return;
+    }
+
+    dev_t id = makedev(drm_props.renderMajor, drm_props.renderMinor);
+    drmDevice *device = NULL;
+    int ret = drmGetDeviceFromDevId(id, 0, &device);
+    if (ret < 0) {
+        MP_WARN(ctx, "Cannot resolve host DRM render node: %s\n", mp_strerror(-ret));
+        return;
+    }
+    if (device->available_nodes & (1 << DRM_NODE_RENDER)) {
+        const char *path = device->nodes[DRM_NODE_RENDER];
+        int fd = open(path, O_RDWR | O_CLOEXEC);
+        struct stat st;
+        if (fd < 0) {
+            MP_WARN(ctx, "Cannot open host DRM render node %s: %s\n",
+                    path, mp_strerror(errno));
+        } else if (fstat(fd, &st) < 0 || !S_ISCHR(st.st_mode) || st.st_rdev != id) {
+            MP_WARN(ctx, "Host DRM render node identity mismatch: %s\n", path);
+            close(fd);
+        } else {
+            p->drm_params.render_fd = fd;
+            ra_add_native_resource(ctx->ra_ctx->ra, "drm_params_v2", &p->drm_params);
+            MP_VERBOSE(ctx, "Host VAAPI DRM render node: %s\n", path);
+        }
+    }
+    drmFreeDevice(&device);
+}
+#endif
 
 static struct pl_color_space host_color(struct ra_swapchain *sw)
 {
@@ -147,6 +235,11 @@ void gpu_host_destroy(struct gpu_ctx *ctx)
     }
     if (ctx->ra_ctx && ctx->ra_ctx->ra)
         ctx->ra_ctx->ra->fns->destroy(ctx->ra_ctx->ra);
+#if HOST_VAAPI_DRM
+    // The VO destroys its hardware mappers and VA display before this context.
+    if (p->drm_params.render_fd >= 0)
+        close(p->drm_params.render_fd);
+#endif
     pl_vulkan_destroy(&p->vk);
     pl_log_destroy(&ctx->pllog);
     talloc_free(ctx);
@@ -160,6 +253,9 @@ struct gpu_ctx *gpu_host_create(struct vo *vo, struct ra_ctx_opts *opts,
     ctx->host = true;
     struct host_priv *p = ctx->priv = talloc_zero(ctx, struct host_priv);
     p->host = host;
+#if HOST_VAAPI_DRM
+    p->drm_params = (mpv_opengl_drm_params_v2){.fd = -1, .render_fd = -1};
+#endif
     ctx->pllog = mppl_log_create(ctx, vo->log);
     p->vk = pl_vulkan_import(ctx->pllog, pl_vulkan_import_params(
         .instance = host->instance, .phys_device = host->physical_device,
@@ -183,6 +279,9 @@ struct gpu_ctx *gpu_host_create(struct vo *vo, struct ra_ctx_opts *opts,
     };
     if (!ra->ra)
         goto error;
+#if HOST_VAAPI_DRM
+    host_init_drm(ctx);
+#endif
     ra->swapchain = talloc_zero(ra, struct ra_swapchain);
     *ra->swapchain = (struct ra_swapchain){.ctx = ra, .fns = &host_sw_fns};
     return ctx;

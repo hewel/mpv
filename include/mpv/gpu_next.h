@@ -29,6 +29,15 @@ extern "C" {
  * operation with mpv's operations. Never call mpv synchronously from callbacks,
  * never hold that queue lock while calling mpv or waiting for a callback.
  *
+ * Optional Linux VAAPI: when built with VAAPI/DRM, mpv uses the physical device's
+ * VK_EXT_physical_device_drm identity to open and own its matching render node.
+ * Direct VAAPI also requires actual DMA-BUF texture import support in libplacebo;
+ * enable VK_KHR_external_memory_fd, VK_EXT_external_memory_dma_buf and
+ * VK_EXT_image_drm_format_modifier (including dependencies) on the host device
+ * when supported. Individual decoded formats/modifiers must still be importable.
+ * Missing support leaves normal hwdec fallback policy in effect. No host fd is
+ * borrowed and the descriptor ABI is unchanged.
+ *
  * All acquire/release callbacks run on the VO thread. They must return promptly
  * and must not wait for the UI thread. Use a bounded host pool: acquire returns
  * 0 when exhausted/hidden, 1 on success, negative on fatal error. mpv holds at

@@ -63,6 +63,32 @@ Key review obligations:
 - Release is permission to present, not scanout feedback. Software decode plus
   GPU rendering is not hardware decode or end-to-end zero-copy.
 
+### Direct VAAPI on a host device
+
+On Linux builds with VAAPI/DRM, the host backend queries
+`VK_EXT_physical_device_drm` on the supplied physical device, resolves its render
+node through libdrm, and verifies the opened character device's major/minor
+identity. It owns that fd until host teardown, after hardware mappers and the VA
+display have been destroyed. No application fd or host ABI change is required.
+An unavailable identity or inaccessible node leaves hardware-decoder fallback
+policy in effect; it never selects an arbitrary render node.
+
+The consumer must enable supported `VK_KHR_external_memory_fd`,
+`VK_EXT_external_memory_dma_buf` and `VK_EXT_image_drm_format_modifier` extensions
+and their dependencies on the actual device it creates. Reporting their names
+only in the host descriptor is insufficient. The existing VAAPI/libplacebo
+mapper checks `PL_HANDLE_DMA_BUF` and probes decoded formats; availability of the
+capability bit alone does not prove that every NV12/P010 modifier can be imported.
+Verbose logs identify the render node and selected interop. Use `hwdec-current`
+and the actual decoded image format to distinguish `vaapi`, `vaapi-copy`, and
+software fallback in the embedded instance.
+
+This reuses existing mapper synchronization and leaves scheduled target release,
+host GPU completion, the consumer's private-texture copy, and color processing
+unchanged. It does not establish end-to-end zero-copy. Changes to the isolated
+iced example do not update JellyPilot's separately maintained device creation or
+pinned artifacts; product and human color acceptance remain separate gates.
+
 The host interface and any separable native-path fixes are candidates for
 upstream discussion, not accepted upstream APIs. Before carrying a patch forward,
 check whether upstream now supplies equivalent behavior; remove a local seam
