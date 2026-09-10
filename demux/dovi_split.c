@@ -196,6 +196,8 @@ struct demux_packet *mp_dovi_split_dispatch(struct mp_dovi_split *s,
         dp->dts = bl_dp->dts;
         dp->duration = bl_dp->duration;
         dp->keyframe = bl_dp->keyframe;
+        // Refresh seeks need the source position when the stream has no DTS.
+        dp->pos = bl_dp->pos;
         dp->stream = s->el->index;
     }
     av_packet_unref(s->staging);

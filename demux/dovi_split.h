@@ -45,7 +45,7 @@ struct sh_stream *mp_dovi_split_el_stream(struct mp_dovi_split *s);
 // Caller owns the returned packet. Returns NULL if the access unit contained
 // no EL NALs or on any non-fatal BSF error.
 //
-// The emitted packet inherits pts/dts/duration/keyframe from `bl_dp` so it
-// lines up with the matching BL packet for PTS-based pairing downstream.
+// The emitted packet inherits pts/dts/duration/keyframe/pos from `bl_dp` for
+// PTS-based pairing and demux refresh seeks.
 struct demux_packet *mp_dovi_split_dispatch(struct mp_dovi_split *s,
                                             struct demux_packet *bl_dp);

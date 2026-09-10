@@ -83,6 +83,15 @@ chmap = executable('chmap', 'chmap.c', include_directories: incdir,
                    link_with: test_utils)
 test('chmap', chmap)
 
+dovi_split_objects = libmpv.extract_objects('demux/dovi_split.c',
+                                            'demux/packet.c',
+                                            'demux/packet_pool.c')
+dovi_split = executable('dovi-split', 'dovi_split.c',
+                        include_directories: incdir,
+                        dependencies: [libavcodec, libavutil],
+                        objects: dovi_split_objects, link_with: test_utils)
+test('dovi-split', dovi_split)
+
 gl_video_objects = libmpv.extract_objects('video/out/gpu/ra.c',
                                           'video/out/gpu/utils.c')
 gl_video = executable('gl-video', 'gl_video.c', objects: gl_video_objects,
