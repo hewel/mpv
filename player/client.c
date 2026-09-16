@@ -680,8 +680,11 @@ int mpv_gpu_next_set_host(mpv_handle *ctx, const mpv_gpu_next_host *host)
         return MPV_ERROR_INVALID_PARAMETER;
     lock_core(ctx);
     int res = MPV_ERROR_INVALID_PARAMETER;
+    // Versions 1..2 share the validated field prefix; a v1 descriptor is
+    // smaller, so the appended target_color field is never dereferenced here.
     if (!ctx->mpctx->initialized &&
-        (!host || (host->version == MPV_GPU_NEXT_HOST_VERSION &&
+        (!host || (host->version >= 1 &&
+                   host->version <= MPV_GPU_NEXT_HOST_VERSION &&
                    host->instance && host->physical_device && host->device &&
                    host->features && host->lock_queue && host->unlock_queue &&
                    host->acquire && host->release && host->num_extensions >= 0 &&

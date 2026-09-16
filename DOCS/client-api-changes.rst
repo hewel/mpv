@@ -30,14 +30,18 @@ you can access with them.
 Experimental fork extension
 ==========================
 
-This fork adds the Linux/Vulkan SDR ``mpv/gpu_next.h`` interface, versioned
+This fork adds the Linux/Vulkan ``mpv/gpu_next.h`` interface, versioned
 separately by ``MPV_GPU_NEXT_HOST_VERSION``. ``mpv_gpu_next_set_host`` registers
 host-owned Vulkan rendering targets before initialization.
 ``mpv_gpu_next_request_redraw`` asks the VO scheduler to redraw after host resize
 or recovery from an unavailable target. Presentation remains scheduled by mpv;
 this is not an extension of the OpenGL render API or a stable upstream ABI.
-See ``gpu-next-host-baseline.rst`` for the exact color, ownership, synchronization
-and verified platform contract.
+Host ABI version 2 appends the optional ``target_color`` callback, which lets
+the host switch the signaled render-target color space (fixed SDR by default,
+e.g. BT.2020/PQ for HDR) at runtime without recreating mpv; version 1
+descriptors keep the fixed SDR contract. Color processing remains in
+gpu-next/libplacebo. See ``gpu-next-host-baseline.rst`` for the exact color,
+ownership, synchronization and verified platform contract.
 
 API changes
 ===========

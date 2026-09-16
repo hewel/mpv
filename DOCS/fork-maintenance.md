@@ -57,9 +57,12 @@ Key review obligations:
   calls, thread joins and waits for callbacks occur outside that gate. The iced
   gate's exact submission/callback policy belongs to iced and the application
   bridge, not a second implementation here.
-- Fixed Linux/Vulkan SDR output is RGB10A2, BT.709/gamma 2.2/full range with the
-  header's luminance and alpha conventions. Missing capability is an error, not
-  an 8-bit substitution. No application-side replacement tone mapper.
+- Host ABI version 1 output is fixed SDR: RGB10A2, BT.709/gamma 2.2/full range
+  with the header's luminance and alpha conventions. Version 2 may describe an
+  HDR target at runtime through `target_color`; the host must actually signal
+  it, and the RGB10A2 image format is unchanged. Missing capability is an
+  error, not an 8-bit substitution. No application-side replacement tone
+  mapper; color processing stays in gpu-next/libplacebo.
 - Release is permission to present, not scanout feedback. Software decode plus
   GPU rendering is not hardware decode or end-to-end zero-copy.
 

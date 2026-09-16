@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define MPV_GPU_NEXT_HOST_VERSION 1
+#define MPV_GPU_NEXT_HOST_VERSION 2
 
 /* Experimental Linux/Vulkan gpu-next host API, separate from render.h.
  * The host owns every Vulkan object. Register before mpv_initialize, select
@@ -60,11 +60,26 @@ extern "C" {
  * flags permitted). Pixel dimensions may change on every acquire: retain old
  * images until released, then until the host's own sampling has completed.
  *
- * Fixed native SDR target: BT.709, gamma 2.2, full range, 203 nit white,
- * 0.203 nit black, premultiplied alpha, 10-bit RGB. Output-target color overrides
- * cannot change this contract. Existing scaling, tone mapping and OSD paths are
- * used. The host must preserve these nonlinear code values: an sRGB attachment
- * needs inverse-sRGB before its automatic encode, not another gamma 2.2 encode.
+ * Render-target color space. Version 1 descriptors, and version 2 descriptors
+ * with target_color == NULL, use a fixed native SDR target: BT.709, gamma 2.2,
+ * full range, 203 nit white, 0.203 nit black, premultiplied alpha, 10-bit RGB.
+ * Output-target color overrides cannot change that contract. Otherwise the VO
+ * thread calls target_color whenever the swapchain target description is
+ * queried; the host fills *out, and fields left 0/unknown fall back to the
+ * fixed SDR constants, so a partial description is valid. A changed answer
+ * takes effect on the next rendered frame, without VO or device recreation;
+ * while paused, schedule that frame with mpv_gpu_next_request_redraw. The
+ * host synchronizes its own answer state against the VO thread.
+ *
+ * The host guarantees its swapchain/surface actually signals the described
+ * target. PQ means full-range BT.2020 in the same 10-bit A2B10G10R10 target.
+ * HDR10 static metadata (MaxCLL/mastering display) is NOT passed in this ABI
+ * version. The host must preserve code values exactly as rendered: an sRGB
+ * attachment needs inverse-sRGB before its automatic encode, not another
+ * gamma 2.2 encode. Existing scaling, tone mapping and OSD paths are used;
+ * color processing remains in gpu-next/libplacebo. target_color follows the
+ * acquire/release callback rules: it runs on the VO thread, must return
+ * promptly, and must never call mpv synchronously.
  */
 typedef struct mpv_gpu_next_target {
     VkImage image;
@@ -74,6 +89,29 @@ typedef struct mpv_gpu_next_target {
     VkImageUsageFlags usage;
     uint64_t token;
 } mpv_gpu_next_target;
+
+/* Runtime-described render-target color space (host ABI version 2). The int
+ * fields MUST numerically match libplacebo's enum pl_color_primaries and
+ * enum pl_color_transfer values (e.g. BT.709 = 3, BT.2020 = 6, sRGB = 2,
+ * gamma 2.2 = 6, PQ = 12, HLG = 13); this header deliberately does not
+ * include libplacebo headers. A zero field is unknown and falls back to the
+ * fixed SDR constant for that field.
+ *
+ * depth is reserved: the host image is always full-range 10-bit
+ * A2B10G10R10, so hosts MUST pass 0 (unknown) or 10; other values are
+ * ignored. ref_luma is honored only when mpv is built against libplacebo
+ * API >= 371; older builds keep the 203 nit default. Treat ref_luma as
+ * static per target configuration even on API >= 371: changing it alone
+ * does not refresh an already-mapped paused frame's cached source luminance.
+ */
+typedef struct mpv_gpu_next_color {
+    int primaries;   // matches enum pl_color_primaries (libplacebo)
+    int transfer;    // matches enum pl_color_transfer (libplacebo)
+    float ref_luma;  // SDR reference white in nits (e.g. 203); 0 = unknown
+    float min_luma;  // target black in nits (e.g. 0.203); 0 = unknown
+    float max_luma;  // target peak in nits; 0 = unknown
+    int depth;       // reserved: MUST be 0 (unknown) or 10 (see above)
+} mpv_gpu_next_color;
 
 typedef struct mpv_gpu_next_host {
     uint32_t version;
@@ -90,6 +128,12 @@ typedef struct mpv_gpu_next_host {
     void (*unlock_queue)(void *opaque, uint32_t family, uint32_t index);
     int (*acquire)(void *opaque, mpv_gpu_next_target *target);
     void (*release)(void *opaque, const mpv_gpu_next_target *target, int status);
+    /* Version 2 and later. Optional; NULL keeps the fixed SDR target.
+     * Otherwise called on the VO thread whenever the swapchain target
+     * description is queried; see the color contract above. Never read for
+     * version 1 descriptors, which are smaller than this struct.
+     */
+    void (*target_color)(void *opaque, mpv_gpu_next_color *out);
 } mpv_gpu_next_host;
 
 /* Returns 0, MPV_ERROR_INVALID_PARAMETER, or MPV_ERROR_NOT_IMPLEMENTED when

@@ -262,3 +262,36 @@ were removed. Diagnostic images/JSON remain in /tmp/mpv-iced-baseline; the
 temporary Vulkan headers remain because the configured local build needs them.
 The two manual test windows are deliberately left open for the user. No commit,
 push, system package installation, or production JellyPilot migration was made.
+
+Host ABI version 2: runtime target color
+-----------------------------------------
+
+``MPV_GPU_NEXT_HOST_VERSION`` is now 2. Version 2 appends one optional
+callback, ``void (*target_color)(void *opaque, mpv_gpu_next_color *out)``,
+to ``mpv_gpu_next_host``. Registration accepts versions 1 and 2 and rejects
+others. Version 1 descriptors, and version 2 descriptors with a NULL
+callback, keep the fixed SDR contract measured above (BT.709, gamma 2.2,
+full range, 203/0.203 nit, premultiplied 10-bit RGB). A version 1 descriptor
+is smaller than the current struct, so the callback field is never read for
+it; the version gate precedes every access.
+
+Otherwise the VO thread calls ``target_color`` whenever the swapchain target
+description is queried. The host fills ``*out``; fields left 0/unknown fall
+back to the fixed SDR constants per field, so a partial description is valid.
+A changed answer takes effect on the next rendered frame without recreating
+mpv, the VO, or the device; while paused, the host schedules that frame with
+``mpv_gpu_next_request_redraw``. The callback follows the acquire/release
+rules: VO thread, prompt return, no synchronous mpv calls. ``depth`` is
+reserved (0 or 10; the image is always RGB10A2, and the rendered code values
+assume it). ``ref_luma`` is honored only with libplacebo API >= 371 and
+should be treated as static per target configuration: changing it alone does
+not refresh an already-mapped paused frame's cached source luminance.
+
+The host guarantees its swapchain or surface actually signals the described
+target. PQ means full-range BT.2020 in the same 10-bit A2B10G10R10 target;
+the image format and the preserve-code-values obligation are unchanged.
+HDR10 static metadata (MaxCLL/mastering display) is not passed in this ABI
+version. Color processing, tone mapping and scaling remain in
+gpu-next/libplacebo; the callback only describes the target. All measurements
+above were recorded under the fixed SDR contract and remain the SDR
+reference; HDR output requires its own matched comparison before acceptance.

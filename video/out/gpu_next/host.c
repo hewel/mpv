@@ -112,17 +112,72 @@ static void host_init_drm(struct gpu_ctx *ctx)
 }
 #endif
 
-static struct pl_color_space host_color(struct ra_swapchain *sw)
+// The host ABI documents these libplacebo enum values; pin them so a
+// libplacebo renumbering fails the build instead of silently changing it.
+_Static_assert(PL_COLOR_PRIM_BT_709 == 3, "host ABI primaries");
+_Static_assert(PL_COLOR_PRIM_BT_2020 == 6, "host ABI primaries");
+_Static_assert(PL_COLOR_TRC_SRGB == 2, "host ABI transfer");
+_Static_assert(PL_COLOR_TRC_GAMMA22 == 6, "host ABI transfer");
+_Static_assert(PL_COLOR_TRC_PQ == 12, "host ABI transfer");
+_Static_assert(PL_COLOR_TRC_HLG == 13, "host ABI transfer");
+
+// Fixed SDR contract of host ABI version 1, and the per-field fallback for a
+// version 2 target_color answer.
+static const mpv_gpu_next_color host_sdr = {
+    .primaries = PL_COLOR_PRIM_BT_709,
+    .transfer = PL_COLOR_TRC_GAMMA22,
+    .ref_luma = 203.0f,
+    .min_luma = 0.203f,
+    .max_luma = 203.0f,
+    .depth = 10,
+};
+
+// Runs on the VO thread. Version 1 descriptors predate the target_color
+// field, so it must never be read for them.
+static mpv_gpu_next_color host_target_color(struct host_priv *p)
+{
+    mpv_gpu_next_color out = host_sdr;
+    const mpv_gpu_next_host *host = p->host;
+    if (host->version >= 2 && host->target_color) {
+        mpv_gpu_next_color dynamic = {0};
+        host->target_color(host->opaque, &dynamic);
+        if (dynamic.primaries)
+            out.primaries = dynamic.primaries;
+        if (dynamic.transfer)
+            out.transfer = dynamic.transfer;
+        if (dynamic.ref_luma)
+            out.ref_luma = dynamic.ref_luma;
+        if (dynamic.min_luma)
+            out.min_luma = dynamic.min_luma;
+        if (dynamic.max_luma)
+            out.max_luma = dynamic.max_luma;
+        // depth is reserved: the host image is always full-range RGB10A2, so
+        // it stays 10. Signaling any other depth would make libplacebo's
+        // pl_color_repr_normalize rescale the code values in that image.
+    }
+    return out;
+}
+
+static struct pl_color_space host_pl_color(mpv_gpu_next_color color)
 {
     return (struct pl_color_space) {
-        .primaries = PL_COLOR_PRIM_BT_709,
-        .transfer = PL_COLOR_TRC_GAMMA22,
-        .hdr = {.min_luma = 0.203f, .max_luma = 203.0f},
+        .primaries = color.primaries,
+        .transfer = color.transfer,
+        .hdr = {.min_luma = color.min_luma, .max_luma = color.max_luma},
     };
 }
 
+static struct pl_color_space host_color(struct ra_swapchain *sw)
+{
+    return host_pl_color(host_target_color(sw->ctx->priv));
+}
+
 static int host_depth(struct ra_swapchain *sw) { return 10; }
-static float host_luma(struct ra_swapchain *sw) { return 203.0f; }
+
+static float host_luma(struct ra_swapchain *sw)
+{
+    return host_target_color(sw->ctx->priv).ref_luma;
+}
 static bool host_reconfig(struct ra_ctx *ra) { return true; }
 static int host_control(struct ra_ctx *ra, int *events, int request, void *arg)
 {
@@ -204,9 +259,11 @@ bool gpu_host_start_frame(struct gpu_ctx *ctx, struct pl_swapchain_frame *frame)
         .qf = VK_QUEUE_FAMILY_IGNORED));
     ctx->ra_ctx->vo->dwidth = p->target.width;
     ctx->ra_ctx->vo->dheight = p->target.height;
+    // The host image is always RGB10A2; both depths stay 10 (see above).
+    mpv_gpu_next_color color = host_target_color(p);
     *frame = (struct pl_swapchain_frame) {
         .fbo = p->tex,
-        .color_space = host_color(NULL),
+        .color_space = host_pl_color(color),
         .color_repr = {
             .sys = PL_COLOR_SYSTEM_RGB, .levels = PL_COLOR_LEVELS_FULL,
             .alpha = PL_ALPHA_PREMULTIPLIED,
@@ -275,7 +332,7 @@ struct gpu_ctx *gpu_host_create(struct vo *vo, struct ra_ctx_opts *opts,
     struct ra_ctx *ra = ctx->ra_ctx = talloc_zero(ctx, struct ra_ctx);
     *ra = (struct ra_ctx) {
         .vo = vo, .global = vo->global, .log = vo->log, .opts = *opts,
-        .fns = &host_fns, .ra = ra_create_pl(ctx->gpu, vo->log),
+        .fns = &host_fns, .ra = ra_create_pl(ctx->gpu, vo->log), .priv = p,
     };
     if (!ra->ra)
         goto error;
