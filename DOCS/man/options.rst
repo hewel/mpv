@@ -1044,15 +1044,18 @@ Program Behavior
 
         I have no idea.
 
-``--ytdl-format=<|ytdl|best|worst|mp4|webm|...>``
+``--ytdl-format=<ytdl|best|worst|mp4|webm|...>``
     Format selection string that is directly passed to youtube-dl.
     The possible values are specific to the website and the video, for a given
     URL the available formats can be found with the command
     ``youtube-dl -F URL``. See youtube-dl's documentation for available aliases.
-    (Default: empty)
+    (Default: ``bestvideo*+bestaudio/bestvideo+bestaudio/best``)
 
-    An empty value or ``ytdl`` does not pass a ``--format`` option to youtube-dl
-    at all, and thus uses its default format selection behavior.
+    The default selects the best separate video and audio tracks with a muxed
+    fallback.
+
+    The ``ytdl`` value does not pass a ``--format`` option to youtube-dl at
+    all, and thus does not override its default.
 
 ``--ytdl-raw-options=<key>=<value>[,<key>=<value>[,...]]``
     Pass arbitrary options to youtube-dl. Parameter and argument should be
@@ -4539,6 +4542,11 @@ Input
 ``--input-builtin-drag-and-drop=<yes|no>``
     Enable the built-in drag-and-drop behavior (default: yes). Setting it to no
     disables the built-in drag-and-drop handling.
+
+    .. admonition:: Note (macOS)
+
+        This also affects the drag and drop behavior on the Dock Icon and
+        loading files from Finder, since both cases can't be distinguished.
 
 ``--input-cmdlist``
     Prints all commands that can be bound to keys.

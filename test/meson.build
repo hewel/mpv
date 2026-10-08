@@ -92,6 +92,22 @@ dovi_split = executable('dovi-split', 'dovi_split.c',
                         objects: dovi_split_objects, link_with: test_utils)
 test('dovi-split', dovi_split)
 
+swresample_files = [
+    'audio/aframe.c',
+    'audio/chmap_avchannel.c',
+    'audio/fmt-conversion.c',
+    'demux/packet.c',
+    'demux/packet_pool.c',
+    'filters/f_swresample.c',
+    'filters/filter.c',
+    'filters/frame.c',
+]
+swresample_objects = libmpv.extract_objects(swresample_files)
+swresample = executable('swresample', 'swresample.c', include_directories: incdir,
+                        dependencies: [libavcodec, libavutil, libswresample, libplacebo],
+                        objects: swresample_objects, link_with: [img_utils, test_utils])
+test('swresample', swresample)
+
 gl_video_objects = libmpv.extract_objects('video/out/gpu/ra.c',
                                           'video/out/gpu/utils.c')
 gl_video = executable('gl-video', 'gl_video.c', objects: gl_video_objects,
