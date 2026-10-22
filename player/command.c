@@ -91,8 +91,8 @@
 #endif
 
 struct command_ctx {
-    // All properties, terminated with a {0} item.
-    struct m_property *properties;
+    // All properties, sorted by name.
+    struct m_property_list properties;
 
     double last_seek_time;
     double last_seek_pts;
@@ -428,9 +428,8 @@ static int mp_property_generic_option(void *ctx, struct m_property *prop,
                                       int action, void *arg)
 {
     MPContext *mpctx = ctx;
-    struct m_config_option *opt =
-        m_config_get_co(mpctx->mconfig, bstr0(prop->name));
-
+    struct m_config_option *opt = prop->is_option ? prop->priv :
+                        m_config_get_co(mpctx->mconfig, bstr0(prop->name));
     if (!opt)
         return M_PROPERTY_UNKNOWN;
 
@@ -1383,9 +1382,15 @@ static int tag_property(int action, void *arg, struct mp_tags *tags)
                 .type = CONF_TYPE_STRING,
             };
             return M_PROPERTY_OK;
-        case M_PROPERTY_SET:
-            mp_tags_set_bstr(tags, k, bstr0(*(char **)ka->arg));
+        case M_PROPERTY_SET: {
+            bstr v = bstr0(*(char **)ka->arg);
+            if (v.len == 0) {
+                mp_tags_remove_bstr(tags, k);
+            } else {
+                mp_tags_set_bstr(tags, k, v);
+            }
             return M_PROPERTY_OK;
+        }
         }
     }
     }
@@ -3693,7 +3698,7 @@ static int mp_property_playlist_pos_1(void *ctx, struct m_property *prop,
     return mp_property_playlist_pos_x(ctx, prop, action, arg, 1);
 }
 
-static int get_playlist_entry(int item, int action, void *arg, void *ctx)
+static int do_playlist_entry(int item, int action, void *arg, void *ctx)
 {
     struct MPContext *mpctx = ctx;
 
@@ -3713,6 +3718,32 @@ static int get_playlist_entry(int item, int action, void *arg, void *ctx)
         {0}
     };
 
+    if (action != M_PROPERTY_KEY_ACTION)
+        goto prop_get;
+
+    struct m_property_action_arg *ka = arg;
+    if (strcmp(ka->key, "title") != 0)
+        goto prop_get;
+
+    // handle playlist/N/title writes
+    switch (ka->action) {
+    case M_PROPERTY_SET_NODE: {
+        return M_PROPERTY_NOT_IMPLEMENTED;
+    }
+    case M_PROPERTY_GET_TYPE: {
+        *(struct m_option *)ka->arg = (struct m_option){
+            .type = CONF_TYPE_STRING,
+        };
+        return M_PROPERTY_OK;
+    }
+    case M_PROPERTY_SET: {
+        talloc_replace(e, e->title, *(char **)ka->arg);
+        mp_notify_property(mpctx, "playlist");
+        return M_PROPERTY_OK;
+    }
+    }
+
+prop_get:
     return m_property_read_sub(props, action, arg);
 }
 
@@ -3762,7 +3793,7 @@ static int mp_property_playlist(void *ctx, struct m_property *prop,
     }
 
     return m_property_read_list(action, arg, playlist_entry_count(mpctx->playlist),
-                                get_playlist_entry, mpctx);
+                                do_playlist_entry, mpctx);
 }
 
 static char *print_obj_osd_list(struct m_obj_settings *list)
@@ -4198,9 +4229,9 @@ static int mp_property_list(void *ctx, struct m_property *prop,
     case M_PROPERTY_GET: {
         char **list = NULL;
         int num = 0;
-        for (int n = 0; cmd->properties[n].name; n++) {
+        for (int n = 0; n < cmd->properties.num; n++) {
             MP_TARRAY_APPEND(NULL, list, num,
-                                talloc_strdup(NULL, cmd->properties[n].name));
+                             talloc_strdup(NULL, cmd->properties.props[n].name));
         }
         MP_TARRAY_APPEND(NULL, list, num, NULL);
         *(char ***)arg = list;
@@ -4975,8 +5006,8 @@ uint64_t mp_get_property_event_mask(const char *name)
 int mp_get_property_id(struct MPContext *mpctx, const char *name)
 {
     struct command_ctx *ctx = mpctx->command_ctx;
-    for (int n = 0; ctx->properties[n].name; n++) {
-        if (match_property(ctx->properties[n].name, name))
+    for (int n = 0; n < ctx->properties.num; n++) {
+        if (match_property(ctx->properties.props[n].name, name))
             return n;
     }
     return -1;
@@ -5004,10 +5035,10 @@ int mp_property_do(const char *name, int action, void *val,
                    struct MPContext *ctx)
 {
     struct command_ctx *cmd = ctx->command_ctx;
-    int r = m_property_do(ctx->log, cmd->properties, name, action, val, ctx);
+    int r = m_property_do(ctx->log, &cmd->properties, name, action, val, ctx);
 
     if (mp_msg_test(ctx->log, MSGL_V) && is_property_set(action, val)) {
-        struct m_property *property = m_property_list_find(cmd->properties, name);
+        struct m_property *property = m_property_list_find(&cmd->properties, name);
         if (property && property->is_noisy && !mp_msg_test(ctx->log, MSGL_TRACE))
             return r;
 
@@ -5033,7 +5064,7 @@ int mp_property_do(const char *name, int action, void *val,
 char *mp_property_expand_string(struct MPContext *mpctx, const char *str)
 {
     struct command_ctx *ctx = mpctx->command_ctx;
-    return m_properties_expand_string(ctx->properties, str, mpctx);
+    return m_properties_expand_string(&ctx->properties, str, mpctx);
 }
 
 // Before expanding properties, parse C-style escapes like "\n"
@@ -5060,7 +5091,7 @@ char *mp_property_expand_escaped_string(struct MPContext *mpctx, const char *str
 void property_print_help(struct MPContext *mpctx)
 {
     struct command_ctx *ctx = mpctx->command_ctx;
-    m_properties_print_help_list(mpctx->log, ctx->properties);
+    m_properties_print_help_list(mpctx->log, &ctx->properties);
 }
 
 /* List of default ways to show a property on OSD.
@@ -5673,7 +5704,7 @@ static void change_property_cmd(struct mp_cmd_ctx *cmd,
     struct m_property *prop = NULL;
     if (cmd->cmd->coalesce) {
         struct command_ctx *ctx = cmd->mpctx->command_ctx;
-        prop = m_property_list_find(ctx->properties, name);
+        prop = m_property_list_find(&ctx->properties, name);
         if (prop)
             prop->coalesce = true;
     }
@@ -6779,6 +6810,7 @@ static void cmd_track_reload(void *p)
         flags |= t->visual_impaired_track ? TRACK_VISUAL_IMPAIRED : 0;
         flags |= t->forced_track ? TRACK_FORCED : 0;
         flags |= t->default_track ? TRACK_DEFAULT : 0;
+        flags |= t->commentary_track ? TRACK_COMMENTARY : 0;
         mp_remove_track(mpctx, t);
         nt_num = mp_add_external_file(mpctx, filename, type, cmd->abort->cancel,
                                       flags);
@@ -7690,7 +7722,8 @@ const struct mp_cmd_def mp_cmds[] = {
                 {"hearing-impaired", TRACK_HEARING_IMPAIRED},
                 {"visual-impaired", TRACK_VISUAL_IMPAIRED},
                 {"forced", TRACK_FORCED},
-                {"default", TRACK_DEFAULT}),
+                {"default", TRACK_DEFAULT},
+                {"commentary", TRACK_COMMENTARY}),
                 .flags = MP_CMD_OPT_ARG},
             {"title", OPT_STRING(v.s), .flags = MP_CMD_OPT_ARG},
             {"lang", OPT_STRING(v.s), .flags = MP_CMD_OPT_ARG},
@@ -7708,7 +7741,8 @@ const struct mp_cmd_def mp_cmds[] = {
                 {"hearing-impaired", TRACK_HEARING_IMPAIRED},
                 {"visual-impaired", TRACK_VISUAL_IMPAIRED},
                 {"forced", TRACK_FORCED},
-                {"default", TRACK_DEFAULT}),
+                {"default", TRACK_DEFAULT},
+                {"commentary", TRACK_COMMENTARY}),
                 .flags = MP_CMD_OPT_ARG},
             {"title", OPT_STRING(v.s), .flags = MP_CMD_OPT_ARG},
             {"lang", OPT_STRING(v.s), .flags = MP_CMD_OPT_ARG},
@@ -7727,7 +7761,8 @@ const struct mp_cmd_def mp_cmds[] = {
                 {"visual-impaired", TRACK_VISUAL_IMPAIRED},
                 {"attached-picture", TRACK_ATTACHED_PICTURE},
                 {"forced", TRACK_FORCED},
-                {"default", TRACK_DEFAULT}),
+                {"default", TRACK_DEFAULT},
+                {"commentary", TRACK_COMMENTARY}),
                 .flags = MP_CMD_OPT_ARG},
             {"title", OPT_STRING(v.s), .flags = MP_CMD_OPT_ARG},
             {"lang", OPT_STRING(v.s), .flags = MP_CMD_OPT_ARG},
@@ -8091,7 +8126,15 @@ const struct mp_cmd_def mp_cmds[] = {
             {"menu",        STREAM_NAV_MENU_ROOT},
             {"title-menu",  STREAM_NAV_MENU_TITLE},
             {"popup",       STREAM_NAV_MENU_POPUP},
+            {"audio-menu",  STREAM_NAV_MENU_AUDIO},
+            {"sub-menu",    STREAM_NAV_MENU_SUBTITLE},
+            {"angle-menu",  STREAM_NAV_MENU_ANGLE},
+            {"up-menu",     STREAM_NAV_GO_UP},
             {"prev",        STREAM_NAV_PREV_MENU},
+            {"red",         STREAM_NAV_KEY_RED},
+            {"green",       STREAM_NAV_KEY_GREEN},
+            {"yellow",      STREAM_NAV_KEY_YELLOW},
+            {"blue",        STREAM_NAV_KEY_BLUE},
             {"mouse-move",  STREAM_NAV_MOUSE_MOVE},
             {"mouse-click", STREAM_NAV_MOUSE_CLICK})},
           {"x", OPT_DOUBLE(v.d), OPTDEF_DOUBLE(-1)},
@@ -8138,9 +8181,9 @@ void command_init(struct MPContext *mpctx)
 
     int num_base = MP_ARRAY_SIZE(mp_properties_base);
     int num_opts = m_config_get_co_count(mpctx->mconfig);
-    ctx->properties =
-        talloc_zero_array(ctx, struct m_property, num_base + num_opts + 1);
-    memcpy(ctx->properties, mp_properties_base, sizeof(mp_properties_base));
+    struct m_property *props =
+        talloc_zero_array(ctx, struct m_property, num_base + num_opts);
+    memcpy(props, mp_properties_base, sizeof(mp_properties_base));
 
     const char **prop_names = talloc_array(NULL, const char *, num_base);
     for (int i = 0; i < num_base; ++i)
@@ -8157,6 +8200,7 @@ void command_init(struct MPContext *mpctx)
         struct m_property prop = {
             .name = co->name,
             .call = mp_property_generic_option,
+            .priv = co,
             .is_option = true,
         };
 
@@ -8187,8 +8231,11 @@ void command_init(struct MPContext *mpctx)
         if (bsearch(&prop.name, prop_names, num_base, sizeof(const char *), str_compare))
             continue;
 
-        ctx->properties[count++] = prop;
+        props[count++] = prop;
     }
+
+    ctx->properties = (struct m_property_list){props, count};
+    m_property_list_sort(&ctx->properties);
 
     node_init(&ctx->mdata, MPV_FORMAT_NODE_ARRAY, NULL);
     talloc_steal(ctx, ctx->mdata.u.list);
