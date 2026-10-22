@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define MPV_GPU_NEXT_HOST_VERSION 2
+#define MPV_GPU_NEXT_HOST_VERSION 3
 
 /* Experimental Linux/Vulkan gpu-next host API, separate from render.h.
  * The host owns every Vulkan object. Register before mpv_initialize, select
@@ -43,17 +43,20 @@ extern "C" {
  * 0 when exhausted/hidden, 1 on success, negative on fatal error. mpv holds at
  * most one acquired target. Fatal errors disable acquisition until VO recreation.
  * A successful acquire receives exactly one release, including on teardown.
+ * The legacy acquire/release pair uses CPU-completed handoff:
  * release(status=0) is the presentation notification, issued ONLY in flip_page
  * after mpv's playback scheduler permits presentation, with GPU writes complete.
  * A negative status means discard, not present (including interrupted teardown).
  * Do not display the image before a successful release. Actual compositor
  * presentation remains the host's responsibility; no display-sync feedback.
  *
- * Acquire must supply an image whose previous GPU accesses have COMPLETED,
+ * Legacy acquire must supply an image whose previous GPU accesses have COMPLETED,
  * owned by queue_family, with the stated layout. No GPU or host accesses until
  * release. This prototype blocks for mpv GPU completion, never reads pixels to
- * CPU. On successful release the layout is SHADER_READ_ONLY_OPTIMAL, ownership
- * remains queue_family. Error releases leave layout/content unspecified but
+ * CPU. Version 3 optionally replaces this pair with acquire_frame/release_frame
+ * and GPU timeline synchronization, described below. On successful release the
+ * layout is SHADER_READ_ONLY_OPTIMAL; ownership remains queue_family.
+ * Error releases leave layout/content unspecified but
  * all mpv GPU work is complete; destroy or transition from UNDEFINED before reuse.
  * Images are 2D, single mip/layer/sample, optimal tiling, same VkDevice, format
  * A2B10G10R10_UNORM_PACK32, usage COLOR_ATTACHMENT|SAMPLED|TRANSFER_DST (additional
@@ -89,6 +92,51 @@ typedef struct mpv_gpu_next_target {
     VkImageUsageFlags usage;
     uint64_t token;
 } mpv_gpu_next_target;
+
+/* Asynchronous handoff (host ABI version 3). The host owns a TIMELINE semaphore
+ * on the same VkDevice, preferably one per pool slot, initially valued 0.
+ * acquire_frame fills this entire structure. mpv waits for wait_value before
+ * touching target, then signals signal_value after its writes and the transition
+ * to SHADER_READ_ONLY_OPTIMAL. semaphore must not be NULL; signal_value must be
+ * strictly greater than wait_value and every previously submitted signal on it.
+ * Values never wrap. All Vulkan timeline feature/limit requirements still apply.
+ * The layout supplied by acquire_frame is the layout at wait_value. Its signal
+ * operation must already have been submitted before acquire_frame returns;
+ * depending on future UI work could deadlock the shared queue or mpv teardown.
+ *
+ * A typical slot cycle is wait=2*n, signal=2*n+1; the host's copy waits for
+ * 2*n+1 and signals 2*n+2. Separate slot timelines avoid a later frame satisfying
+ * an earlier frame's dependency out of order. The host must serialize attachment
+ * of external waits/signals and the matching queue submission with lock_queue.
+ *
+ * release_frame(status=0) authorizes presentation ONLY at scheduled flip_page,
+ * after the signal operation has been submitted, without waiting for GPU
+ * completion on the CPU. The host must wait for signal_value on the GPU before
+ * copying/sampling target, including its layout transition. Release is neither
+ * a GPU-completion callback nor scanout feedback. The callback receives a copy
+ * of the acquired frame with target.layout updated; it must copy anything it
+ * retains, as the pointer is only valid during the callback.
+ *
+ * release_frame(status<0) discards the frame. No signal value is promised: never
+ * enqueue a wait for this frame's signal_value. mpv drains its submitted work
+ * before this error callback (unless the device is lost), returns layout
+ * UNDEFINED, and disables acquisition until VO recreation. Complete the host's
+ * own outstanding work before destroying or reusing its images. On device loss,
+ * abandon the device instead of attempting to reuse its resources.
+ *
+ * The host retains all handed-off images until their successful signal and its
+ * own accesses complete, or until an error release drains mpv. Semaphores must
+ * remain alive until mpv_terminate_destroy returns AND the host's submissions
+ * using them complete: a signaled value alone is not a semaphore lifetime fence.
+ * Resizing may replace idle images while retaining the slot's semaphore.
+ * mpv never destroys a host semaphore or image.
+ */
+typedef struct mpv_gpu_next_frame {
+    mpv_gpu_next_target target;
+    VkSemaphore semaphore;
+    uint64_t wait_value;
+    uint64_t signal_value;
+} mpv_gpu_next_frame;
 
 /* Runtime-described render-target color space (host ABI version 2). The int
  * fields MUST numerically match libplacebo's enum pl_color_primaries and
@@ -134,6 +182,16 @@ typedef struct mpv_gpu_next_host {
      * version 1 descriptors, which are smaller than this struct.
      */
     void (*target_color)(void *opaque, mpv_gpu_next_color *out);
+    /* Version 3 and later. Set BOTH callbacks to opt into asynchronous GPU
+     * handoff; acquire/release are then unused and may be NULL. Set both NULL
+     * to retain the legacy pair. A partial pair is rejected at registration.
+     * Versions 1 and 2 are smaller structs: these fields are never read for
+     * them. Return codes, bounded acquisition, thread and exactly-once release
+     * rules are the same as for the legacy pair; synchronization differs as
+     * documented in mpv_gpu_next_frame.
+     */
+    int (*acquire_frame)(void *opaque, mpv_gpu_next_frame *frame);
+    void (*release_frame)(void *opaque, const mpv_gpu_next_frame *frame, int status);
 } mpv_gpu_next_host;
 
 /* Returns 0, MPV_ERROR_INVALID_PARAMETER, or MPV_ERROR_NOT_IMPLEMENTED when

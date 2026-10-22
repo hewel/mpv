@@ -43,6 +43,15 @@ descriptors keep the fixed SDR contract. Color processing remains in
 gpu-next/libplacebo. See ``gpu-next-host-baseline.rst`` for the exact color,
 ownership, synchronization and verified platform contract.
 
+Host ABI version 3 appends the optional ``acquire_frame`` / ``release_frame``
+pair and introduces ``mpv_gpu_next_frame``. Hosts can supply a per-slot Vulkan
+timeline semaphore to exchange images without a CPU wait for every frame.
+Successful release still occurs only at scheduled ``flip_page``; consumers must
+wait for the supplied signal on the GPU. Error releases drain producer work but
+promise no signal. Versions 1 and 2, and version 3 descriptors using the legacy
+callback pair, keep their CPU-completed handoff. See ``mpv/gpu_next.h`` and
+``fork-maintenance.md`` for lifetime rules and the opt-in real-device regression.
+
 API changes
 ===========
 

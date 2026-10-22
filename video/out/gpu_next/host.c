@@ -32,7 +32,8 @@ struct host_priv {
     pl_tex tex;
     VkSemaphore done;
     uint64_t serial;
-    mpv_gpu_next_target target;
+    mpv_gpu_next_frame frame;
+    bool async;
     bool acquired;
     bool failed;
 #if HOST_VAAPI_DRM
@@ -203,21 +204,36 @@ static bool release_target(struct gpu_ctx *ctx, int status)
     if (!p->acquired)
         return true;
     if (p->tex) {
+        // The host owns the async timeline through mpv shutdown. Never expose
+        // p->done: it is destroyed when this VO is torn down, while the host
+        // may still have a consumer submission waiting for the released frame.
+        pl_vulkan_sem done = p->async && status == 0
+            ? (pl_vulkan_sem){p->frame.semaphore, p->frame.signal_value}
+            : (pl_vulkan_sem){p->done, ++p->serial};
         if (!pl_vulkan_hold_ex(ctx->gpu, pl_vulkan_hold_params(
                 .tex = p->tex,
                 .layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 .qf = VK_QUEUE_FAMILY_IGNORED,
-                .semaphore = {p->done, ++p->serial})))
+                .semaphore = done)))
             status = MPV_ERROR_VO_INIT_FAILED;
-        pl_gpu_finish(ctx->gpu);
-        pl_tex_destroy(ctx->gpu, &p->tex);
     }
     if (pl_gpu_is_failed(ctx->gpu))
         status = MPV_ERROR_VO_INIT_FAILED;
-    p->target.layout = status == 0 ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                                   : VK_IMAGE_LAYOUT_UNDEFINED;
+    // hold_ex submits the signal. Keep successful async handoff entirely on
+    // the GPU; drain on errors even when wrapping this target failed, since
+    // earlier successfully released frames may still have producer work.
+    if (!p->async || status < 0)
+        pl_gpu_finish(ctx->gpu);
+    pl_tex_destroy(ctx->gpu, &p->tex);
+    if (pl_gpu_is_failed(ctx->gpu))
+        status = MPV_ERROR_VO_INIT_FAILED;
+    p->frame.target.layout = status == 0 ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                       : VK_IMAGE_LAYOUT_UNDEFINED;
     p->acquired = false;
-    p->host->release(p->host->opaque, &p->target, status);
+    if (p->async)
+        p->host->release_frame(p->host->opaque, &p->frame, status);
+    else
+        p->host->release(p->host->opaque, &p->frame.target, status);
     if (status < 0)
         p->failed = true;
     return status == 0;
@@ -232,8 +248,11 @@ bool gpu_host_start_frame(struct gpu_ctx *ctx, struct pl_swapchain_frame *frame)
         release_target(ctx, MPV_ERROR_GENERIC);
         return false;
     }
-    p->target = (mpv_gpu_next_target){0};
-    int res = p->host->acquire(p->host->opaque, &p->target);
+    p->frame = (mpv_gpu_next_frame){0};
+    mpv_gpu_next_target *target = &p->frame.target;
+    int res = p->async
+        ? p->host->acquire_frame(p->host->opaque, &p->frame)
+        : p->host->acquire(p->host->opaque, target);
     if (res != 1) {
         if (res < 0) {
             MP_ERR(ctx, "Host target acquisition failed: %d\n", res);
@@ -242,23 +261,29 @@ bool gpu_host_start_frame(struct gpu_ctx *ctx, struct pl_swapchain_frame *frame)
         return false;
     }
     p->acquired = true;
+    if (p->async && (!p->frame.semaphore ||
+                    p->frame.signal_value <= p->frame.wait_value))
+        goto error;
     VkImageUsageFlags required = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    if (!p->target.image || p->target.width <= 0 || p->target.height <= 0 ||
-        (p->target.usage & required) != required)
+    if (!target->image || target->width <= 0 || target->height <= 0 ||
+        (target->usage & required) != required)
         goto error;
     p->tex = pl_vulkan_wrap(ctx->gpu, pl_vulkan_wrap_params(
-        .image = p->target.image,
-        .width = p->target.width, .height = p->target.height,
+        .image = target->image,
+        .width = target->width, .height = target->height,
         .format = VK_FORMAT_A2B10G10R10_UNORM_PACK32,
-        .usage = p->target.usage));
+        .usage = target->usage));
     if (!p->tex)
         goto error;
     pl_vulkan_release_ex(ctx->gpu, pl_vulkan_release_params(
-        .tex = p->tex, .layout = p->target.layout,
-        .qf = VK_QUEUE_FAMILY_IGNORED));
-    ctx->ra_ctx->vo->dwidth = p->target.width;
-    ctx->ra_ctx->vo->dheight = p->target.height;
+        .tex = p->tex, .layout = target->layout,
+        .qf = VK_QUEUE_FAMILY_IGNORED,
+        .semaphore = p->async
+            ? (pl_vulkan_sem){p->frame.semaphore, p->frame.wait_value}
+            : (pl_vulkan_sem){0}));
+    ctx->ra_ctx->vo->dwidth = target->width;
+    ctx->ra_ctx->vo->dheight = target->height;
     // The host image is always RGB10A2; both depths stay 10 (see above).
     mpv_gpu_next_color color = host_target_color(p);
     *frame = (struct pl_swapchain_frame) {
@@ -310,6 +335,7 @@ struct gpu_ctx *gpu_host_create(struct vo *vo, struct ra_ctx_opts *opts,
     ctx->host = true;
     struct host_priv *p = ctx->priv = talloc_zero(ctx, struct host_priv);
     p->host = host;
+    p->async = host->version >= 3 && host->acquire_frame && host->release_frame;
 #if HOST_VAAPI_DRM
     p->drm_params = (mpv_opengl_drm_params_v2){.fd = -1, .render_fd = -1};
 #endif

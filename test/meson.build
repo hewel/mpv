@@ -151,6 +151,20 @@ if features['libcurl']
 endif
 
 if get_option('libmpv')
+    if features['vulkan'] and host_machine.system() == 'linux'
+        exe = executable('libmpv-gpu-next', 'libmpv_gpu_next.c',
+                         include_directories: incdir,
+                         dependencies: [libmpv_dep, vulkan])
+        test('libmpv-gpu-next', exe, suite: 'libmpv')
+
+        exe = executable('libmpv-gpu-next-vulkan', 'libmpv_gpu_next_vulkan.c',
+                         include_directories: incdir,
+                         dependencies: [libmpv_dep, vulkan, libplacebo, pthreads])
+        test('libmpv-gpu-next-vulkan', exe, suite: 'libmpv',
+             args: join_paths(source_root, 'etc', 'mpv-icon-8bit-16x16.png'),
+             timeout: 90)
+    endif
+
     file = join_paths(source_root, 'etc', 'mpv-icon-8bit-16x16.png')
 
     exe = executable('libmpv-test-file-loading', 'libmpv_test_file_loading.c',

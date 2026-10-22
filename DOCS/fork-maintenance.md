@@ -66,6 +66,68 @@ Key review obligations:
 - Release is permission to present, not scanout feedback. Software decode plus
   GPU rendering is not hardware decode or end-to-end zero-copy.
 
+### Asynchronous GPU handoff (host ABI version 3)
+
+Version 3 appends an optional `acquire_frame` / `release_frame` pair. Set both to
+select timeline synchronization, or leave both NULL and keep the legacy pair.
+Registration rejects a partial pair. Version checks protect older, shorter
+descriptors; the version 1/2 callback prefix and completion semantics are intact.
+The host's shared-device setup and RGB10A2/color contract are unchanged.
+
+Each `mpv_gpu_next_frame` contains its target, one host-owned timeline semaphore,
+and the incoming `wait_value` and outgoing `signal_value`. A typical per-slot
+cycle uses 0 -> 1 -> 2: mpv waits for 0 and signals 1; the host's copy waits for 1
+and signals 2; the next producer use waits for 2. Values increase monotonically
+and never wrap. Use separate slot timelines so a later slot cannot accidentally
+satisfy an earlier slot's dependency. The signal for an incoming wait must
+already be submitted before acquire returns; it must not depend on future UI
+work. Layout describes the image at the incoming wait value.
+
+`release_frame(status=0)` means mpv's playback scheduler authorized presentation
+and the producer's signal was submitted. It does **not** mean GPU completion.
+The host attaches a GPU wait before copying or sampling the image. Attachment of
+an external wait/signal and the matching consumer submission must be one queue
+gate transaction: other submissions must not consume that synchronization.
+The consumer still owns its private presentation texture and releases the pool
+slot only after its copy completes. This removes a per-frame CPU stall; it does
+not remove the GPU copy or establish display scanout timing.
+
+An error release returns layout UNDEFINED after draining mpv's submissions and
+disables acquisition until VO recreation. It promises **no signal**, so the host
+must never enqueue a wait for that failed frame. Existing host operations still
+need to finish. Device loss requires abandoning that device. Both callback
+pairs retain bounded acquisition and exactly one release per successful acquire,
+including interrupted rendering and shutdown.
+
+The host owns semaphore lifetime through `mpv_terminate_destroy` and its own
+outstanding GPU work. A signaled timeline value alone does not authorize
+semaphore destruction. Keep slot semaphores across image resize, or retain
+retired ones until that lifetime boundary. mpv drains before destroying its
+imported context; it never destroys host images or semaphores. Application mpv
+calls, device polling, GPU waits and completion-worker joins stay outside the
+shared queue gate.
+
+With `-Dtests=true -Dlibmpv=true -Dvulkan=enabled`, Linux builds include:
+
+- `libmpv-gpu-next`: registration contracts and guard-page checks for the exact
+  version 1/2 descriptor sizes; no GPU needed.
+- `libmpv-gpu-next-vulkan`: opt-in real-device regression. It queues a controlled
+  GPU dependency, checks that asynchronous release occurs while the timeline is
+  still pending, then opens the gate. It also exercises target exhaustion and
+  retry, paused resize, invalid target/signal rejection, and shutdown with work
+  in flight. It uses the repository's small PNG, without copyrighted test media.
+
+Run the latter explicitly on the intended machine:
+
+```sh
+MPV_TEST_GPU_NEXT=1 meson test -C build libmpv-gpu-next-vulkan --print-errorlogs
+```
+
+Without the environment opt-in the GPU test is skipped. The executable reports
+the selected device; a software Vulkan result must not be reported as hardware
+acceptance. Native/iced sustained playback and human color acceptance remain
+the separate joint gates below.
+
 ### Direct VAAPI on a host device
 
 On Linux builds with VAAPI/DRM, the host backend queries
