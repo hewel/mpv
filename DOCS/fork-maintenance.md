@@ -166,6 +166,13 @@ upstream commit for a stated fix or compatibility goal. Keep unrelated iced/wgpu
 upgrades out of an mpv/FFmpeg/libplacebo update unless a documented dependency
 requires the combined migration.
 
+The current build requires libplacebo >= 7.387.0. Rebuild the consumer's native
+dependency bundle with that version or newer before selecting this mpv revision;
+the previous 7.360.1 library is insufficient. For an isolated validation prefix,
+pass `--pkg-config-path=<prefix>/lib/pkgconfig` to `meson setup` rather than
+replacing system libraries. This dependency update does not change host ABI
+version 3 or authorize updating the application's deployed source lock.
+
 In a clean, dedicated checkout, first inspect `git remote -v`. If no `upstream`
 remote exists, explicitly configure it to
 `https://github.com/mpv-player/mpv.git`; verify an existing remote rather than
