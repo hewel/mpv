@@ -115,6 +115,12 @@ gl_video = executable('gl-video', 'gl_video.c', objects: gl_video_objects,
                       link_with: [img_utils, test_utils])
 test('gl-video', gl_video)
 
+gpu_next_queue = executable('gpu-next-queue', 'gpu_next_queue.c',
+                            include_directories: [incdir, incdir_public],
+                            objects: libmpv.extract_all_objects(recursive: true),
+                            dependencies: dependencies)
+test('gpu-next-queue', gpu_next_queue)
+
 json = executable('json', 'json.c', include_directories: [incdir, incdir_public], link_with: test_utils)
 test('json', json)
 
