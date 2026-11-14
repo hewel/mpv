@@ -32,6 +32,24 @@ Before accepting an upstream change around these seams, inspect the shared
 native path as well as the host path. A conflict-free merge is not evidence that
 libplacebo import, texture state, renderer options, or scheduling still agree.
 
+### A-B loop count updates
+
+The playback fix in `player/command.c` recomputes A-B clipping when
+`ab-loop-count` changes, as it already does for either marker. This allows a
+client to disable looping, seek inside the interval, and re-enable it by changing
+only the count. Seeking past B must still leave playback outside the loop.
+Keep the configured count separate from `remaining-ab-loops`. Upstream commit
+`53f2619dbd740b71bdd4277f096d077ffb8d571b` deliberately makes equal count writes
+replenish the remaining budget; preserve this behavior without seeking or
+resuming paused playback. Natural loop decrements must not run the option-change
+callback or replenish the budget. Infinite loops retain the remaining-budget
+sentinel of -1.
+
+Validate these transitions through actual playback and seek events, including
+finite exhaustion, repeated equal writes and disabling an infinite loop. Use
+generated media for deterministic boundaries and a bounded real-media CLI/IPC
+smoke with null outputs; this does not establish GPU or application acceptance.
+
 ### ABI and resource contract
 
 The authoritative contract is [gpu_next.h](../include/mpv/gpu_next.h).

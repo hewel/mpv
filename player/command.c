@@ -8688,13 +8688,14 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
         opt_ptr == &opts->ab_loop_count) {
         mpctx->remaining_ab_loops = opts->ab_loop_count;
         mp_notify_property(mpctx, "remaining-ab-loops");
+        // Changing only the count can re-enable clipping after a disabled seek.
+        update_ab_loop_clip(mpctx);
+        mp_wakeup_core(mpctx);
     }
 
     if (opt_ptr == &opts->ab_loop[0] || opt_ptr == &opts->ab_loop[1]) {
-        update_ab_loop_clip(mpctx);
         // Update if visible
         set_osd_bar_chapters(mpctx, OSD_BAR_SEEK);
-        mp_wakeup_core(mpctx);
     }
 
     if (opt_ptr == &opts->vf_settings)
