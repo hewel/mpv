@@ -173,6 +173,18 @@ pass `--pkg-config-path=<prefix>/lib/pkgconfig` to `meson setup` rather than
 replacing system libraries. This dependency update does not change host ABI
 version 3 or authorize updating the application's deployed source lock.
 
+GBM support additionally requires libgbm >= 21.3.0; this is conditional on
+building that backend, not a new requirement for every host-only build.
+The renderer now uses libplacebo's tone-map constants rather than the deprecated
+single tone-mapping parameter. Revalidate matched native/embedded color output
+with the application's actual settings before accepting new references.
+
+Hardware decoding now holds back up to four frames before renderer handoff and
+accounts for that queue in hardware-frame allocation. Exercise direct VAAPI,
+pause/exact seek, decoder reopen and EOF on real media; check frame drops and
+retained resources during sustained playback rather than inferring performance
+from a successful build.
+
 In a clean, dedicated checkout, first inspect `git remote -v`. If no `upstream`
 remote exists, explicitly configure it to
 `https://github.com/mpv-player/mpv.git`; verify an existing remote rather than
@@ -247,3 +259,40 @@ Restore the application's entire previously accepted source-lock/Cargo.lock and
 matching native artifact/configuration manifest when rolling back. Do not move
 published fork branch pointers or swap one native library while leaving the
 other half of an unverified combination installed.
+
+### Local validation media (maintainer workstation)
+
+The maintainer's test-video directory is
+`/home/hewel/Data/jellypilot/test-videos`. This is a machine-local acceptance
+corpus, not a build dependency or a path that other machines must reproduce.
+Keep the videos and reference captures outside Git; record the chosen file's
+SHA-256, ffprobe metadata, playback times and output settings with each run.
+
+Useful selections, inspected on 2026-11-14:
+
+- SDR playback with audio and sustained lifecycle checks:
+  `bbb_h264_aac_1080p.mp4` (H.264/AAC, 1080p, about 635 seconds).
+- Short codec checks: the `bbb_*`, `sintel_av1_*` and `jellyfish_hevc_*`
+  clips cover H.264, HEVC, VP9 and AV1. The 10-second clips are not suitable
+  for sustained application runs that seek and then dwell in playback.
+- HDR10:
+  `One Hundred Years of Solitude - S01E12 - The Innocent Train Had Arrived - [WEBDL-2160p][h265-10bit][EAC3 Atmos].mkv`.
+  Stream/frame metadata identifies 10-bit HEVC, BT.2020/PQ, mastering-display
+  metadata and content-light metadata.
+- Dolby Vision Profile 8:
+  `Star.Wars.Andor.S02E10.Make.It.Stop.2160p.DSNP.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-FLUX.mkv`.
+  Its DOVI record reports profile 8, HDR10-compatible base layer and no
+  enhancement layer; decoded frame metadata includes a Dolby Vision RPU.
+  It does not satisfy the Profile 5 or enhancement-layer pairing gates.
+
+No Profile 5 sample was identified in this inventory. Obtain and verify one
+before claiming that acceptance gate; do not infer the profile from filenames.
+Reinspect metadata when selecting or replacing files rather than treating this
+inventory as permanent proof of their contents.
+
+The HDR10 file's frame at one second is near black. The current application
+probe seeks to that fixed time and requires a nonuniform screenshot before
+advancing; this sample timed out in phase 8 with both the pre-sync library and
+the synchronization candidate. Preserve that failed result rather than treating
+it as HDR acceptance or weakening the assertion. Native playback at a later
+time and manual color comparison are separate checks.
